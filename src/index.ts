@@ -3,6 +3,8 @@ import express, { Request, Response, Application } from "express";
 const app: Application = express();
 const PORT = process.env.PORT || 3000;
 
+console.log("Starting server...");
+
 // Middleware para parsing JSON
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
