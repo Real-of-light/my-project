@@ -1,0 +1,102 @@
+name: On pull request
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+
+jobs:
+  pr_analysis:
+    name: PR Analysis
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check PR title
+        uses: amannn/action-semantic-pull-request@v5.4.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          subjectPattern: ^(?![A-Z]).+$
+
+      # Check if this is a Node.js project
+      - name: Check for Node.js project
+        id: check-node
+        run: |
+          if [ -f "package.json" ]; then
+            echo "is_node_project=true" >> $GITHUB_OUTPUT
+          else
+            echo "is_node_project=false" >> $GITHUB_OUTPUT
+          fi
+
+      # Read .nvmrc if it exists, otherwise use a default Node.js version
+      - name: Read .nvmrc or set default Node version
+        if: steps.check-node.outputs.is_node_project == 'true'
+        run: |
+          if [ -f ".nvmrc" ]; then
+            echo "NODE_VERSION=$(cat .nvmrc)" >> $GITHUB_OUTPUT
+          else
+            echo "NODE_VERSION=18" >> $GITHUB_OUTPUT
+          fi
+        id: nvm
+
+      - name: Setup Node
+        if: steps.check-node.outputs.is_node_project == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ steps.nvm.outputs.NODE_VERSION }}
+          registry-url: "https://npm.pkg.github.com"
+
+      - name: Restore Dependencies Cache
+        if: steps.check-node.outputs.is_node_project == 'true'
+        uses: actions/cache@v4
+        id: node-modules-cache
+        with:
+          path: ./node_modules
+          key: ${{ runner.os }}-node_modules-${{ hashFiles('**/package-lock.json') }}
+
+      - name: Install Dependencies
+        if: steps.check-node.outputs.is_node_project == 'true'
+        run: npm ci
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Save Dependencies Cache
+        if: steps.check-node.outputs.is_node_project == 'true' && steps.node-modules-cache.outputs.cache-hit != 'true'
+        uses: actions/cache@v4
+        with:
+          path: ./node_modules
+          key: ${{ runner.os }}-node_modules-${{ hashFiles('**/package-lock.json') }}
+
+      # Run lint if lint script exists in package.json
+      - name: Check if lint script exists
+        if: steps.check-node.outputs.is_node_project == 'true'
+        id: check-lint
+        run: |
+          if [ -f "package.json" ] && npm run | grep -q "lint"; then
+            echo "has_lint=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_lint=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run lint
+        if: steps.check-node.outputs.is_node_project == 'true' && steps.check-lint.outputs.has_lint == 'true'
+        run: npm run lint
+
+      # Basic file checks for any project type
+      - name: Check for common issues
+        run: |
+          echo "Running basic project checks..."
+
+          # Check for TODO/FIXME comments
+          if grep -r "TODO\|FIXME" . --exclude-dir=node_modules --exclude-dir=.git --exclude="*.yml" --exclude="*.yaml" | head -5; then
+            echo "::warning::Found TODO/FIXME comments in the code"
+          fi
+
+          # Check for large files (> 1MB)
+          find . -type f -size +1M -not -path "./.git/*" -not -path "./node_modules/*" | while read file; do
+            echo "::warning::Large file detected: $file"
+          done
+
+          echo "Basic checks completed"
